@@ -45,11 +45,15 @@ Batch checks mobile only (faster). ~20–40s per site.`;
 bot.command(['start', 'help'], (ctx) => ctx.reply(HELP, { parse_mode: 'HTML' }));
 
 async function runSingle(ctx, url) {
-  const msg = await ctx.reply(`🔍 Auditing ${url} … (~30s)`);
+  const msg = await ctx.reply(`🔍 Auditing ${url} … (30s–2min)`);
+  const t0 = Date.now();
+  const tick = setInterval(() => ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔍 Auditing ${url} … still working (${Math.round((Date.now() - t0) / 1000)}s, waiting on Google PageSpeed)`).catch(() => {}), 30000);
   try {
     const r = await auditSite(url, { psiStrategies: ['mobile', 'desktop'] });
+    clearInterval(tick);
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, formatSingle(r), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
   } catch (e) {
+    clearInterval(tick);
     console.error(e);
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Audit failed: ${e.message}`);
   }

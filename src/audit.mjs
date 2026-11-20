@@ -20,6 +20,8 @@ const TRACKER_PATTERNS = [
   ['tiktok.com/i18n/pixel', 'TikTok Pixel'],
 ];
 
+const lower0 = (h) => String(h).slice(0, 50000).toLowerCase();
+
 export function normalizeUrl(input) {
   let s = String(input || '').trim().replace(/[),.;]+$/, '');
   if (!s) return null;
@@ -94,7 +96,7 @@ async function psi(url, strategy) {
   if (PSI_KEY) api.searchParams.set('key', PSI_KEY);
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const { res } = await timedFetch(api.toString(), {}, 90000);
+      const { res } = await timedFetch(api.toString(), {}, 70000);
       if (res.status === 429) { if (!PSI_KEY) return { error: 'PSI rate-limited (add PSI_API_KEY)' }; await new Promise(r => setTimeout(r, 15000 * (attempt + 1))); continue; }
       const j = await res.json();
       if (j.error) return { error: j.error.message?.slice(0, 120) || 'PSI error' };
@@ -140,7 +142,8 @@ export async function auditSite(rawUrl, options = {}) {
   const strategies = options.psiStrategies || ['mobile', 'desktop'];
   const r = { url, host, checkedAt: new Date().toISOString() };
 
-  const psiPromises = Object.fromEntries(strategies.map(s => [s, psi(url, s)]));
+  const deadline = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r({ error: 'Google PageSpeed too slow (skipped)' }), ms))]);
+  const psiPromises = Object.fromEntries(strategies.map(s => [s, deadline(psi(url, s), 120000)]));
 
   // Main page fetch (try https, fall back to http)
   let page;
@@ -163,6 +166,15 @@ export async function auditSite(rawUrl, options = {}) {
   r.poweredBy = headers['x-powered-by'] || '';
   const html = res.status < 500 ? (await res.text()).slice(0, 3_000_000) : '';
   r.htmlKb = Math.round(html.length / 1024);
+
+  const challenge = /<title>\s*(just a moment|attention required|access denied|ddos-guard|checking your browser)|cf-chl-|challenge-platform|captcha-delivery|_incapsula_|sucuri website firewall/i.test(html.slice(0, 50000));
+  if (headers['cf-mitigated'] || ([403, 429, 503].includes(res.status) && challenge)) {
+    r.blocked = true;
+    r.waf = headers['cf-mitigated'] || /cloudflare/i.test(r.server) ? 'Cloudflare' : /sucuri/i.test(lower0(html)) ? 'Sucuri' : 'bot protection';
+    r.fatal = `Blocked by ${r.waf} bot protection. Can't audit automatically; open it on your phone and check by hand.`;
+    r.score = null; r.issues = []; r.pitch = null;
+    return r;
+  }
 
   const $ = cheerio.load(html);
   r.title = $('title').first().text().trim().slice(0, 120);

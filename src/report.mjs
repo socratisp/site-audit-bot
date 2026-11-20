@@ -4,6 +4,7 @@ const grade = (s) => (s >= 80 ? '🟢' : s >= 55 ? '🟡' : s >= 30 ? '🟠' : '
 const sevIcon = { 3: '🔴', 2: '🟠', 1: '🟡' };
 
 export function formatSingle(r) {
+  if (r.blocked) return `⚪ <b>${esc(r.host)}</b> | not audited\n\n🛡 ${esc(r.fatal)}\n\n<i>Sites behind ${esc(r.waf)} usually have someone technical managing them, so they're often a weaker prospect.</i>`;
   if (r.fatal && !r.issues) return `❌ <b>${esc(r.url)}</b>\n${esc(r.fatal)}`;
   const L = [];
   L.push(`${grade(r.score)} <b>${esc(r.host)}</b> | <b>${r.score}/100</b>`);
@@ -35,9 +36,11 @@ export function formatSingle(r) {
 }
 
 export function formatBatch(results) {
-  const sorted = [...results].sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
+  const key = (r) => (r.blocked ? 1000 : r.score ?? 0);
+  const sorted = [...results].sort((a, b) => key(a) - key(b));
   const L = [`📊 <b>Batch done: ${results.length} sites, worst first</b>`, ''];
   sorted.slice(0, 30).forEach((r, idx) => {
+    if (r.blocked) { L.push(`${idx + 1}. ⚪ <b>n/a</b> · ${esc(r.host)}\n    blocked by ${esc(r.waf)}, check by hand`); return; }
     const top = r.fatal && !r.issues?.length ? r.fatal : (r.issues?.[0]?.text || 'no issues');
     L.push(`${idx + 1}. ${grade(r.score ?? 0)} <b>${r.score ?? 0}</b> · ${esc(r.host || r.url)}\n    ${esc(top)}`);
   });
@@ -51,7 +54,7 @@ export function toCsv(sorted) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const rows = sorted.map((r, i) => {
     const m = r.psi?.mobile || {};
-    return [i + 1, r.score ?? 0, r.url, r.title, m.performance, m.lcp, m.seo, r.ttfb, r.ssl?.ok, r.ssl?.days, r.cms, r.phpVersion,
+    return [i + 1, r.blocked ? 'blocked' : (r.score ?? 0), r.url, r.title, m.performance, m.lcp, m.seo, r.ttfb, r.ssl?.ok, r.ssl?.days, r.cms, r.phpVersion,
       r.cmp || (r.fatal ? '' : 'none'), (r.trackers || []).join(' / '), r.links?.broken?.length,
       r.fatal || (r.issues || []).slice(0, 3).map(i => i.text).join(' | '), r.pitch].map(q).join(',');
   });
