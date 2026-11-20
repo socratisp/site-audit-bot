@@ -21,6 +21,8 @@ export function formatSingle(r) {
     L.push(`⚡ Server response: ${r.ttfb} ms`);
     L.push(`🔒 SSL: ${r.ssl?.ok ? `OK (${r.ssl.days} days left)` : `❌ ${esc(r.ssl?.error || 'invalid')}`}${r.httpRedirect?.redirects === false ? ' · ⚠️ no http→https' : ''}`);
     L.push(`🧩 ${esc(r.cms)}${r.phpVersion ? ` · PHP ${esc(r.phpVersion)}` : ''}${r.server ? ` · ${esc(r.server.slice(0, 30))}` : ''}`);
+    if (r.hosting) L.push(`🏠 Hosting: ${esc(r.hosting.label)}${r.hosting.country ? ` · server in ${esc(r.hosting.country)}` : ''}`);
+    if (r.shot) L.push(`📱 iPhone (WebKit): ${r.shot.error ? esc(r.shot.error) : `loaded in ${(r.shot.loadMs / 1000).toFixed(1)}s`}${r.shot.overflowPx > 5 ? ` · ⚠️ ${r.shot.overflowPx}px sideways overflow` : ''}`);
     L.push(`🍪 Cookie banner: ${r.cmp ? `yes (${esc(r.cmp)})` : 'not detected'}${r.trackers?.length ? ` · trackers: ${esc(r.trackers.join(', '))}` : ''}`);
     const a = r.activity || {};
     const parts = [a.domainSince && `domain since ${new Date(a.domainSince).getFullYear()}`, a.built && `site built ${fmtD(a.built)}`, a.lastEdit && `last edit ${new Date(a.lastEdit).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} (${ago(new Date(a.lastEdit))})`].filter(Boolean);
@@ -55,12 +57,12 @@ export function formatBatch(results) {
 }
 
 export function toCsv(sorted) {
-  const cols = ['rank', 'score', 'url', 'title', 'mobile_perf', 'mobile_lcp_s', 'seo', 'ttfb_ms', 'ssl_ok', 'ssl_days', 'cms', 'php', 'cookie_banner', 'trackers', 'broken_links', 'domain_since', 'site_built', 'last_edit', 'top_issues', 'pitch'];
+  const cols = ['rank', 'score', 'url', 'title', 'mobile_perf', 'mobile_lcp_s', 'seo', 'ttfb_ms', 'ssl_ok', 'ssl_days', 'cms', 'php', 'cookie_banner', 'trackers', 'broken_links', 'hosting', 'ios_emoji_symbols', 'domain_since', 'site_built', 'last_edit', 'top_issues', 'pitch'];
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const rows = sorted.map((r, i) => {
     const m = r.psi?.mobile || {};
     return [i + 1, r.blocked ? 'blocked' : (r.score ?? 0), r.url, r.title, m.performance, m.lcp, m.seo, r.ttfb, r.ssl?.ok, r.ssl?.days, r.cms, r.phpVersion,
-      r.cmp || (r.fatal ? '' : 'none'), (r.trackers || []).join(' / '), r.links?.broken?.length,
+      r.cmp || (r.fatal ? '' : 'none'), (r.trackers || []).join(' / '), r.links?.broken?.length, r.hosting?.label, (r.iosEmoji?.chars || []).join(' '),
       r.activity?.domainSince ? new Date(r.activity.domainSince).getFullYear() : '', r.activity?.built ? new Date(r.activity.built).toISOString().slice(0, 7) : '', r.activity?.lastEdit ? new Date(r.activity.lastEdit).toISOString().slice(0, 10) : '',
       r.fatal || (r.issues || []).slice(0, 3).map(i => i.text).join(' | '), r.pitch].map(q).join(',');
   });

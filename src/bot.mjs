@@ -3,6 +3,7 @@ import path from 'node:path';
 import { Bot, InputFile } from 'grammy';
 import { auditSite, extractUrls, normalizeUrl } from './audit.mjs';
 import { formatSingle, formatBatch, toCsv } from './report.mjs';
+import { iphoneShot } from './shot.mjs';
 
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) { console.error('BOT_TOKEN is missing'); process.exit(1); }
@@ -35,12 +36,13 @@ bot.use(async (ctx, next) => {
 
 const HELP = `<b>Site Audit Bot</b>
 
-• <code>/audit example.com</code> → full report + opening line
+• <code>/audit example.com</code> → full report + opening line + iPhone screenshots
+• <code>/shot example.com</code> → iPhone screenshots only (WebKit)
 • Paste one link → same as /audit
 • Paste many links (one per line) → batch, ranked worst first + CSV
 • Upload a .csv or .txt with URLs → batch
 
-Batch checks mobile only (faster). ~20–40s per site.`;
+Batch checks mobile only, no screenshots (faster). ~20–40s per site.`;
 
 bot.command(['start', 'help'], (ctx) => ctx.reply(HELP, { parse_mode: 'HTML' }));
 
@@ -49,15 +51,33 @@ async function runSingle(ctx, url) {
   const t0 = Date.now();
   const tick = setInterval(() => ctx.api.editMessageText(ctx.chat.id, msg.message_id, `🔍 Auditing ${url} … still working (${Math.round((Date.now() - t0) / 1000)}s, waiting on Google PageSpeed)`).catch(() => {}), 30000);
   try {
-    const r = await auditSite(url, { psiStrategies: ['mobile', 'desktop'] });
+    const shotPromise = iphoneShot(url).catch(e => ({ error: e.message.split('\n')[0].slice(0, 100) }));
+    const r = await auditSite(url, { psiStrategies: ['mobile', 'desktop'], shotPromise });
     clearInterval(tick);
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, formatSingle(r), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    await sendShots(ctx, r.host, r.shot);
   } catch (e) {
     clearInterval(tick);
     console.error(e);
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ Audit failed: ${e.message}`);
   }
 }
+
+async function sendShots(ctx, host, shot) {
+  if (!shot?.above) return;
+  const cap = `📱 ${host} on iPhone 14 (WebKit)${shot.loadMs ? ` · loaded in ${(shot.loadMs / 1000).toFixed(1)}s` : ''}`;
+  await ctx.replyWithPhoto(new InputFile(shot.above, `${host}-iphone.jpg`), { caption: cap }).catch(e => console.error('photo', e.message));
+  if (shot.full) await ctx.replyWithDocument(new InputFile(shot.full, `${host}-iphone-fullpage.jpg`), { caption: 'Full page (first ~7000px)' }).catch(e => console.error('doc', e.message));
+}
+
+bot.command('shot', async (ctx) => {
+  const [url] = extractUrls(ctx.match || '');
+  if (!url) return ctx.reply('Usage: /shot example.com');
+  const msg = await ctx.reply(`📸 Opening ${url} on an iPhone 14 (WebKit)…`);
+  const shot = await iphoneShot(url).catch(e => ({ error: e.message.split('\n')[0] }));
+  await ctx.api.editMessageText(ctx.chat.id, msg.message_id, shot.above ? `📸 Done${shot.overflowPx > 5 ? ` · ⚠️ page is ${shot.overflowPx}px wider than the screen` : ''}` : `❌ ${shot.error}`).catch(() => {});
+  await sendShots(ctx, new URL(url).hostname, shot);
+});
 
 async function runBatch(ctx, urls) {
   if (busy) return ctx.reply('⏳ A batch is already running. Wait for it to finish.');
@@ -117,6 +137,7 @@ bot.catch((err) => console.error('Bot error:', err.error || err));
 
 await bot.api.setMyCommands([
   { command: 'audit', description: 'Audit a website: /audit example.com' },
+  { command: 'shot', description: 'iPhone screenshot: /shot example.com' },
   { command: 'help', description: 'How to use' },
 ]);
 console.log('Site Audit Bot running. Owner:', ownerId ?? '(unclaimed; send /start)');

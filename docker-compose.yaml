@@ -1,11 +1,13 @@
 services:
   site-audit-bot:
-    image: node:22-alpine
+    image: mcr.microsoft.com/playwright:v1.65.1-noble
     container_name: site-audit-bot
     restart: unless-stopped
     working_dir: /app
+    init: true
+    ipc: host
     command: >
-      sh -c "wget -qO- https://codeload.github.com/socratisp/site-audit-bot/tar.gz/main | tar xz --strip-components=1
+      sh -c "node -e \"fetch('https://codeload.github.com/socratisp/site-audit-bot/tar.gz/main').then(r=>r.arrayBuffer()).then(b=>process.stdout.write(Buffer.from(b)))\" | tar xz --strip-components=1
       && npm ci --omit=dev --no-audit --no-fund
       && exec node src/bot.mjs"
     environment:
@@ -16,7 +18,7 @@ services:
       - OWNER_ID=${OWNER_ID:-}
     volumes:
       - audit-data:/data
-    mem_limit: 512m
+    mem_limit: 1536m
     logging:
       driver: json-file
       options: { max-size: "5m", max-file: "2" }

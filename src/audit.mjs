@@ -2,6 +2,8 @@
 import tls from 'node:tls';
 import * as cheerio from 'cheerio';
 import { activity } from './activity.mjs';
+import { hosting } from './hosting.mjs';
+import { iosEmojiRisk } from './ios-emoji.mjs';
 
 const UA = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36 SiteAuditBot/1.0';
 const PSI_KEY = process.env.PSI_API_KEY || '';
@@ -210,19 +212,24 @@ export async function auditSite(rawUrl, options = {}) {
     try { const u = new URL(h, base); if (/^https?:$/.test(u.protocol)) { u.hash = ''; links.add(u.toString()); } } catch {}
   });
 
-  const [cert, httpRedirect, linkRes, act] = await Promise.all([
+  r.iosEmoji = iosEmojiRisk(cheerio.load(html));
+  const [cert, httpRedirect, linkRes, act, host_] = await Promise.all([
     checkCert(new URL(base).hostname),
     checkHttpRedirect(host),
     options.links === false ? Promise.resolve(null) : checkLinks([...links]),
     activity(r, html).catch(() => ({})),
+    hosting(r, headers, html).catch(() => ({ label: 'unknown' })),
   ]);
-  r.ssl = cert; r.httpRedirect = httpRedirect; r.links = linkRes; r.activity = act;
+  r.ssl = cert; r.httpRedirect = httpRedirect; r.links = linkRes; r.activity = act; r.hosting = host_;
   if (!r.favicon) {
     try { const { res: f } = await timedFetch(new URL('/favicon.ico', base).toString(), { method: 'HEAD' }, 8000); r.favicon = f.ok; } catch {}
   }
   r.psi = {};
   for (const s of strategies) r.psi[s] = await psiPromises[s];
 
+  if (options.shotPromise) {
+    try { r.shot = await options.shotPromise; } catch (e) { r.shot = { error: e.message.split('\n')[0].slice(0, 100) }; }
+  }
   scoreIt(r);
   return r;
 }
@@ -246,7 +253,8 @@ function scoreIt(r) {
     if (m.accessibility != null && m.accessibility < 70) add(1, 4, `Accessibility score ${m.accessibility}/100`, null);
     if (m.pageWeightKb > 5000) add(2, 6, `Homepage weighs ${(m.pageWeightKb / 1024).toFixed(1)} MB`, `Your homepage is ${(m.pageWeightKb / 1024).toFixed(1)} MB, heavy on mobile data and slow on 4G.`);
   }
-  if (r.ttfb > 1500) add(2, 8, `Slow server response (${r.ttfb} ms)`, `Your server takes ${(r.ttfb / 1000).toFixed(1)}s just to start responding, which usually means cheap or overloaded hosting.`);
+  const hostName = r.hosting?.provider && !/cloudflare/i.test(r.hosting.provider) ? ` (${r.hosting.provider})` : '';
+  if (r.ttfb > 1500) add(2, 8, `Slow server response (${r.ttfb} ms)${hostName}`, `Your server${hostName} takes ${(r.ttfb / 1000).toFixed(1)}s just to start responding, which usually means cheap or overloaded hosting.`);
   else if (r.ttfb > 800) add(1, 4, `Server response ${r.ttfb} ms`, null);
   if (!r.viewport) add(3, 15, 'Not mobile-friendly (no viewport tag)', `${r.host} isn't built for phones. Visitors have to pinch and zoom to read it.`);
   if (!r.title) add(2, 8, 'Missing page title', `Your homepage has no title, so Google has nothing to show for you in search results.`);
@@ -258,6 +266,11 @@ function scoreIt(r) {
   if (r.trackers?.length && !r.cmp) add(r.cmpUncertain ? 1 : 2, r.cmpUncertain ? 3 : 8, `Tracking (${r.trackers.join(', ')}) with no cookie banner${r.cmpUncertain ? ' (verify manually: may load via GTM)' : ''}`, r.cmpUncertain ? null : `Your site loads ${r.trackers[0]} without a cookie consent banner, which is a GDPR problem in the EU.`);
   if (r.wpVersion && parseFloat(r.wpVersion) < 6.4) add(2, 8, `Outdated WordPress ${r.wpVersion}`, `Your site runs an old WordPress version (${r.wpVersion}). Outdated WordPress is the #1 way sites get hacked.`);
   if (r.phpVersion && parseFloat(r.phpVersion) < 8.1) add(2, 6, `Outdated PHP ${r.phpVersion} exposed`, `Your server runs PHP ${r.phpVersion}, which no longer gets security updates.`);
+  if (r.iosEmoji?.count) {
+    const ex = r.iosEmoji.chars.slice(0, 4).join(' ');
+    add(2, 4, `${r.iosEmoji.count} symbol(s) like ${ex} may turn into emoji on iPhone (verify on a real iPhone)`, `On an iPhone, symbols on your site like ${ex} turn into colourful emoji, which looks broken.`);
+  }
+  if (r.shot?.overflowPx > 5) add(2, 8, `Page is ${r.shot.overflowPx}px wider than an iPhone screen (sideways scroll)`, `On an iPhone, ${r.host} scrolls sideways, a sign the mobile layout is broken.`);
   const le = r.activity?.lastEdit;
   if (le) {
     const yrs = (Date.now() - le) / (365 * 86400000);

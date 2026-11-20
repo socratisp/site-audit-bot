@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM mcr.microsoft.com/playwright:v1.65.1-noble
 WORKDIR /app
 ENV NODE_ENV=production DATA_DIR=/data
 COPY package*.json ./
