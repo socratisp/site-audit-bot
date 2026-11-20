@@ -4,6 +4,7 @@ import { Bot, InputFile } from 'grammy';
 import { auditSite, extractUrls, normalizeUrl } from './audit.mjs';
 import { formatSingle, formatBatch, toCsv } from './report.mjs';
 import { iphoneShot } from './shot.mjs';
+import { findPlaces, markSeen, usage, MONTHLY_CAP } from './places.mjs';
 
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) { console.error('BOT_TOKEN is missing'); process.exit(1); }
@@ -38,6 +39,9 @@ const HELP = `<b>Site Audit Bot</b>
 
 • <code>/audit example.com</code> → full report + opening line + iPhone screenshots
 • <code>/shot example.com</code> → iPhone screenshots only (WebKit)
+• <code>/find restaurants Protaras</code> → finds up to 60 businesses on Google Maps, audits their sites (worst first), lists the ones with NO website
+• <code>/findall …</code> → same, but includes places you already checked this month
+• <code>/usage</code> → Google Places usage (free cap)
 • Paste one link → same as /audit
 • Paste many links (one per line) → batch, ranked worst first + CSV
 • Upload a .csv or .txt with URLs → batch
@@ -79,7 +83,7 @@ bot.command('shot', async (ctx) => {
   await sendShots(ctx, new URL(url).hostname, shot);
 });
 
-async function runBatch(ctx, urls) {
+async function runBatch(ctx, urls, meta = {}, label = 'audit') {
   if (busy) return ctx.reply('⏳ A batch is already running. Wait for it to finish.');
   urls = urls.slice(0, MAX_BATCH);
   busy = true;
@@ -89,8 +93,11 @@ async function runBatch(ctx, urls) {
   const worker = async () => {
     while (i < urls.length) {
       const u = urls[i++];
-      try { results.push(await auditSite(u, { psiStrategies: ['mobile'], links: true })); }
-      catch (e) { results.push({ url: u, host: u, fatal: e.message, score: 0 }); }
+      let r;
+      try { r = await auditSite(u, { psiStrategies: ['mobile'], links: true }); }
+      catch (e) { r = { url: u, host: u, fatal: e.message, score: 0 }; }
+      r.meta = meta[u] || null;
+      results.push(r);
       done++;
       if (Date.now() - lastEdit > 8000) {
         lastEdit = Date.now();
@@ -104,12 +111,45 @@ async function runBatch(ctx, urls) {
     await ctx.api.editMessageText(ctx.chat.id, msg.message_id, `📋 Batch: ${urls.length}/${urls.length} done ✅`).catch(() => {});
     await ctx.reply(text, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
     const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
-    await ctx.replyWithDocument(new InputFile(Buffer.from(toCsv(sorted), 'utf8'), `audit-${stamp}.csv`));
+    await ctx.replyWithDocument(new InputFile(Buffer.from(toCsv(sorted), 'utf8'), `${label}-${stamp}.csv`));
   } catch (e) {
     console.error(e);
     await ctx.reply(`❌ Batch error: ${e.message}`);
   } finally { busy = false; }
 }
+
+bot.command(['find', 'findall'], async (ctx) => {
+  const query = (ctx.match || '').trim();
+  if (!query) return ctx.reply('Usage: /find restaurants Protaras\n(/findall also includes places you already checked in the last 30 days)', { parse_mode: undefined });
+  if (busy) return ctx.reply('⏳ A batch is already running. Wait for it to finish.');
+  const includeSeen = ctx.message.text.startsWith('/findall');
+  const msg = await ctx.reply(`🔎 Searching Google Maps for “${query}”…`);
+  let found;
+  try { found = await findPlaces(query, { includeSeen }); }
+  catch (e) { return ctx.api.editMessageText(ctx.chat.id, msg.message_id, `❌ ${e.message}`); }
+  const { total, skippedSeen, withSite, noSite, requests } = found;
+  const u = usage();
+  await ctx.api.editMessageText(ctx.chat.id, msg.message_id,
+    `🔎 “${query}”: ${total} businesses found\n🌐 ${withSite.length} with a website → auditing\n🚫 ${noSite.length} with no real website\n${skippedSeen ? `♻️ ${skippedSeen} skipped (checked in last 30 days)\n` : ''}📈 Google usage this month: ${u.used}/${MONTHLY_CAP} (+${requests})`);
+  markSeen([...withSite, ...noSite].map(p => p.id));
+  const slug = query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'find';
+  if (noSite.length) {
+    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const sortedNo = [...noSite].sort((a, b) => b.reviews - a.reviews);
+    const lines = sortedNo.slice(0, 25).map((p, i) => `${i + 1}. <b>${esc(p.name)}</b> · ⭐${p.rating || '-'} (${p.reviews})${p.status ? ' · ' + p.status : ''}\n    ${p.socialOnly ? `only ${esc(p.socialOnly)}` : 'no website'} · ${esc(p.phone || 'no phone')}`);
+    await ctx.reply(`🚫 <b>No real website: ${noSite.length}</b> (most reviewed first: busy businesses with no site)\n\n${lines.join('\n')}${noSite.length > 25 ? `\n…${noSite.length - 25} more in the CSV` : ''}`, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const csv = '\uFEFF' + ['name', 'type', 'phone', 'rating', 'reviews', 'status', 'social_link', 'address', 'google_maps'].join(',') + '\n' +
+      sortedNo.map(p => [p.name, p.type, p.phone, p.rating, p.reviews, p.status, p.socialOnly, p.address, p.maps].map(q).join(',')).join('\n') + '\n';
+    await ctx.replyWithDocument(new InputFile(Buffer.from(csv, 'utf8'), `no-website-${slug}.csv`));
+  }
+  if (!withSite.length) return ctx.reply('No websites to audit for this search.');
+  const meta = {};
+  const urls = withSite.map(p => { const n = normalizeUrl(p.website); if (n) meta[n] = p; return n; }).filter(Boolean);
+  return runBatch(ctx, urls, meta, `leads-${slug}`);
+});
+
+bot.command('usage', (ctx) => { const u = usage(); return ctx.reply(`📈 Google Places usage ${u.month}: ${u.used}/${MONTHLY_CAP} requests (free tier ≈1,000).`); });
 
 bot.command('audit', async (ctx) => {
   const urls = extractUrls(ctx.match || '');
@@ -137,7 +177,9 @@ bot.catch((err) => console.error('Bot error:', err.error || err));
 
 await bot.api.setMyCommands([
   { command: 'audit', description: 'Audit a website: /audit example.com' },
+  { command: 'find', description: 'Find leads: /find restaurants Protaras' },
   { command: 'shot', description: 'iPhone screenshot: /shot example.com' },
+  { command: 'usage', description: 'Google Places usage this month' },
   { command: 'help', description: 'How to use' },
 ]);
 console.log('Site Audit Bot running. Owner:', ownerId ?? '(unclaimed; send /start)');

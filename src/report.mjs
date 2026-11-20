@@ -47,9 +47,11 @@ export function formatBatch(results) {
   const sorted = [...results].sort((a, b) => key(a) - key(b));
   const L = [`📊 <b>Batch done: ${results.length} sites, worst first</b>`, ''];
   sorted.slice(0, 30).forEach((r, idx) => {
-    if (r.blocked) { L.push(`${idx + 1}. ⚪ <b>n/a</b> · ${esc(r.host)}\n    blocked by ${esc(r.waf)}, check by hand`); return; }
+    if (r.blocked) { L.push(`${idx + 1}. ⚪ <b>n/a</b> · ${r.meta ? `<b>${esc(r.meta.name)}</b> · ` : ''}${esc(r.host)}\n    blocked by ${esc(r.waf)}, check by hand`); return; }
     const top = r.fatal && !r.issues?.length ? r.fatal : (r.issues?.[0]?.text || 'no issues');
-    L.push(`${idx + 1}. ${grade(r.score ?? 0)} <b>${r.score ?? 0}</b> · ${esc(r.host || r.url)}\n    ${esc(top)}`);
+    const m = r.meta;
+    const who = m ? `<b>${esc(m.name)}</b> · ${esc(r.host)}${m.phone ? `\n    📞 ${esc(m.phone)}` : ''}${m.rating ? ` · ⭐${m.rating} (${m.reviews})` : ''}` : esc(r.host || r.url);
+    L.push(`${idx + 1}. ${grade(r.score ?? 0)} <b>${r.score ?? 0}</b> · ${who}\n    ${esc(top)}`);
   });
   if (sorted.length > 30) L.push('', `…${sorted.length - 30} more in the CSV.`);
   L.push('', 'Send <code>/audit domain</code> for the full report on any of them.');
@@ -57,11 +59,11 @@ export function formatBatch(results) {
 }
 
 export function toCsv(sorted) {
-  const cols = ['rank', 'score', 'url', 'title', 'mobile_perf', 'mobile_lcp_s', 'seo', 'ttfb_ms', 'ssl_ok', 'ssl_days', 'cms', 'php', 'cookie_banner', 'trackers', 'broken_links', 'hosting', 'ios_emoji_symbols', 'domain_since', 'site_built', 'last_edit', 'top_issues', 'pitch'];
+  const cols = ['rank', 'score', 'business', 'phone', 'rating', 'reviews', 'google_maps', 'url', 'title', 'mobile_perf', 'mobile_lcp_s', 'seo', 'ttfb_ms', 'ssl_ok', 'ssl_days', 'cms', 'php', 'cookie_banner', 'trackers', 'broken_links', 'hosting', 'ios_emoji_symbols', 'domain_since', 'site_built', 'last_edit', 'top_issues', 'pitch'];
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const rows = sorted.map((r, i) => {
     const m = r.psi?.mobile || {};
-    return [i + 1, r.blocked ? 'blocked' : (r.score ?? 0), r.url, r.title, m.performance, m.lcp, m.seo, r.ttfb, r.ssl?.ok, r.ssl?.days, r.cms, r.phpVersion,
+    return [i + 1, r.blocked ? 'blocked' : (r.score ?? 0), r.meta?.name, r.meta?.phone, r.meta?.rating, r.meta?.reviews, r.meta?.maps, r.url, r.title, m.performance, m.lcp, m.seo, r.ttfb, r.ssl?.ok, r.ssl?.days, r.cms, r.phpVersion,
       r.cmp || (r.fatal ? '' : 'none'), (r.trackers || []).join(' / '), r.links?.broken?.length, r.hosting?.label, (r.iosEmoji?.chars || []).join(' '),
       r.activity?.domainSince ? new Date(r.activity.domainSince).getFullYear() : '', r.activity?.built ? new Date(r.activity.built).toISOString().slice(0, 7) : '', r.activity?.lastEdit ? new Date(r.activity.lastEdit).toISOString().slice(0, 10) : '',
       r.fatal || (r.issues || []).slice(0, 3).map(i => i.text).join(' | '), r.pitch].map(q).join(',');
