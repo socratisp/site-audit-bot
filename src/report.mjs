@@ -1,4 +1,6 @@
 // Formatting audit results for Telegram (HTML parse mode) and CSV.
+import { ago } from './activity.mjs';
+const fmtD = (d) => (d ? new Date(d).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) : null);
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const grade = (s) => (s >= 80 ? '🟢' : s >= 55 ? '🟡' : s >= 30 ? '🟠' : '🔴');
 const sevIcon = { 3: '🔴', 2: '🟠', 1: '🟡' };
@@ -20,6 +22,9 @@ export function formatSingle(r) {
     L.push(`🔒 SSL: ${r.ssl?.ok ? `OK (${r.ssl.days} days left)` : `❌ ${esc(r.ssl?.error || 'invalid')}`}${r.httpRedirect?.redirects === false ? ' · ⚠️ no http→https' : ''}`);
     L.push(`🧩 ${esc(r.cms)}${r.phpVersion ? ` · PHP ${esc(r.phpVersion)}` : ''}${r.server ? ` · ${esc(r.server.slice(0, 30))}` : ''}`);
     L.push(`🍪 Cookie banner: ${r.cmp ? `yes (${esc(r.cmp)})` : 'not detected'}${r.trackers?.length ? ` · trackers: ${esc(r.trackers.join(', '))}` : ''}`);
+    const a = r.activity || {};
+    const parts = [a.domainSince && `domain since ${new Date(a.domainSince).getFullYear()}`, a.built && `site built ${fmtD(a.built)}`, a.lastEdit && `last edit ${new Date(a.lastEdit).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} (${ago(new Date(a.lastEdit))})`].filter(Boolean);
+    L.push(`🗓 ${parts.length ? esc(parts.join(' · ')) : 'Activity: unknown'}`);
     if (r.links) L.push(`🔗 Links: ${r.links.broken.length} broken of ${r.links.checked} checked`);
   }
   if (r.issues?.length) {
@@ -50,12 +55,13 @@ export function formatBatch(results) {
 }
 
 export function toCsv(sorted) {
-  const cols = ['rank', 'score', 'url', 'title', 'mobile_perf', 'mobile_lcp_s', 'seo', 'ttfb_ms', 'ssl_ok', 'ssl_days', 'cms', 'php', 'cookie_banner', 'trackers', 'broken_links', 'top_issues', 'pitch'];
+  const cols = ['rank', 'score', 'url', 'title', 'mobile_perf', 'mobile_lcp_s', 'seo', 'ttfb_ms', 'ssl_ok', 'ssl_days', 'cms', 'php', 'cookie_banner', 'trackers', 'broken_links', 'domain_since', 'site_built', 'last_edit', 'top_issues', 'pitch'];
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const rows = sorted.map((r, i) => {
     const m = r.psi?.mobile || {};
     return [i + 1, r.blocked ? 'blocked' : (r.score ?? 0), r.url, r.title, m.performance, m.lcp, m.seo, r.ttfb, r.ssl?.ok, r.ssl?.days, r.cms, r.phpVersion,
       r.cmp || (r.fatal ? '' : 'none'), (r.trackers || []).join(' / '), r.links?.broken?.length,
+      r.activity?.domainSince ? new Date(r.activity.domainSince).getFullYear() : '', r.activity?.built ? new Date(r.activity.built).toISOString().slice(0, 7) : '', r.activity?.lastEdit ? new Date(r.activity.lastEdit).toISOString().slice(0, 10) : '',
       r.fatal || (r.issues || []).slice(0, 3).map(i => i.text).join(' | '), r.pitch].map(q).join(',');
   });
   return '﻿' + cols.join(',') + '\n' + rows.join('\n') + '\n';

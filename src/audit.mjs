@@ -1,6 +1,7 @@
 // Website audit: fast HTTP/HTML checks + Google PageSpeed Insights.
 import tls from 'node:tls';
 import * as cheerio from 'cheerio';
+import { activity } from './activity.mjs';
 
 const UA = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36 SiteAuditBot/1.0';
 const PSI_KEY = process.env.PSI_API_KEY || '';
@@ -209,12 +210,13 @@ export async function auditSite(rawUrl, options = {}) {
     try { const u = new URL(h, base); if (/^https?:$/.test(u.protocol)) { u.hash = ''; links.add(u.toString()); } } catch {}
   });
 
-  const [cert, httpRedirect, linkRes] = await Promise.all([
+  const [cert, httpRedirect, linkRes, act] = await Promise.all([
     checkCert(new URL(base).hostname),
     checkHttpRedirect(host),
     options.links === false ? Promise.resolve(null) : checkLinks([...links]),
+    activity(r, html).catch(() => ({})),
   ]);
-  r.ssl = cert; r.httpRedirect = httpRedirect; r.links = linkRes;
+  r.ssl = cert; r.httpRedirect = httpRedirect; r.links = linkRes; r.activity = act;
   if (!r.favicon) {
     try { const { res: f } = await timedFetch(new URL('/favicon.ico', base).toString(), { method: 'HEAD' }, 8000); r.favicon = f.ok; } catch {}
   }
@@ -256,6 +258,13 @@ function scoreIt(r) {
   if (r.trackers?.length && !r.cmp) add(r.cmpUncertain ? 1 : 2, r.cmpUncertain ? 3 : 8, `Tracking (${r.trackers.join(', ')}) with no cookie banner${r.cmpUncertain ? ' (verify manually: may load via GTM)' : ''}`, r.cmpUncertain ? null : `Your site loads ${r.trackers[0]} without a cookie consent banner, which is a GDPR problem in the EU.`);
   if (r.wpVersion && parseFloat(r.wpVersion) < 6.4) add(2, 8, `Outdated WordPress ${r.wpVersion}`, `Your site runs an old WordPress version (${r.wpVersion}). Outdated WordPress is the #1 way sites get hacked.`);
   if (r.phpVersion && parseFloat(r.phpVersion) < 8.1) add(2, 6, `Outdated PHP ${r.phpVersion} exposed`, `Your server runs PHP ${r.phpVersion}, which no longer gets security updates.`);
+  const le = r.activity?.lastEdit;
+  if (le) {
+    const yrs = (Date.now() - le) / (365 * 86400000);
+    const when = le.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    if (yrs >= 2) add(2, 8, `Site not updated since ${when}`, `It looks like ${r.host} hasn't been updated since ${when}. Customers notice when a site looks abandoned.`);
+    else if (yrs >= 1) add(1, 4, `Site not updated since ${when}`, null);
+  }
   if (r.copyrightYear && r.copyrightYear < new Date().getFullYear() - 2) add(1, 3, `Footer says © ${r.copyrightYear}`, `The footer still says © ${r.copyrightYear}, which makes the business look inactive.`);
 
   issues.sort((a, b) => b.sev - a.sev || b.pts - a.pts);
