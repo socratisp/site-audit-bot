@@ -1,0 +1,19 @@
+services:
+  site-audit-bot:
+    build:
+      context: https://github.com/socratisp/site-audit-bot.git#main
+    container_name: site-audit-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - PSI_API_KEY=${PSI_API_KEY:-}
+      - OWNER_ID=${OWNER_ID:-}
+    volumes:
+      - audit-data:/data
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "2" }
+
+volumes:
+  audit-data:

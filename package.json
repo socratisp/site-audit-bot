@@ -1,0 +1,16 @@
+{
+  "name": "site-audit-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that audits websites and ranks them worst-first for outreach",
+  "type": "module",
+  "main": "src/bot.mjs",
+  "scripts": {
+    "start": "node src/bot.mjs",
+    "audit": "node src/cli.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "grammy": "^1.46.0"
+  }
+}
