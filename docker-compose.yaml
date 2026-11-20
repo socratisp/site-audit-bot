@@ -1,10 +1,16 @@
 services:
   site-audit-bot:
-    build:
-      context: https://github.com/socratisp/site-audit-bot.git#main
+    image: node:22-alpine
     container_name: site-audit-bot
     restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "wget -qO- https://codeload.github.com/socratisp/site-audit-bot/tar.gz/main | tar xz --strip-components=1
+      && npm ci --omit=dev --no-audit --no-fund
+      && exec node src/bot.mjs"
     environment:
+      - NODE_ENV=production
+      - DATA_DIR=/data
       - BOT_TOKEN=${BOT_TOKEN}
       - PSI_API_KEY=${PSI_API_KEY:-}
       - OWNER_ID=${OWNER_ID:-}
