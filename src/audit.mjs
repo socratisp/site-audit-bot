@@ -70,10 +70,19 @@ function checkCert(host) {
 }
 
 async function checkHttpRedirect(host) {
+  let url = `http://${host}/`;
   try {
-    const { res } = await timedFetch(`http://${host}/`, { redirect: 'manual' }, 10000);
-    const loc = res.headers.get('location') || '';
-    return { redirects: res.status >= 300 && res.status < 400 && loc.startsWith('https://'), status: res.status };
+    for (let hop = 0; hop < 6; hop++) {
+      const { res } = await timedFetch(url, { redirect: 'manual' }, 10000);
+      const loc = res.headers.get('location');
+      if (!(res.status >= 300 && res.status < 400 && loc)) {
+        // final page: https reached? also accept meta/JS redirects we can't see as unknown
+        return { redirects: url.startsWith('https://'), status: res.status, final: url };
+      }
+      url = new URL(loc, url).toString();
+      if (url.startsWith('https://')) return { redirects: true, status: res.status, final: url };
+    }
+    return { redirects: null, error: 'too many redirects' };
   } catch (e) { return { redirects: null, error: e.code || e.name }; }
 }
 
@@ -104,9 +113,10 @@ async function psi(url, strategy) {
   return { error: 'PSI rate-limited (add PSI_API_KEY)' };
 }
 
+const SKIP_LINK_HOSTS = /(^|\.)(tiktok|instagram|facebook|fb|linkedin|twitter|x|youtube|pinterest|tripadvisor|booking|wa|whatsapp|t)\.(com|me|co)$/i;
 async function checkLinks(links, limit = 25) {
   const broken = [];
-  const list = links.slice(0, limit);
+  const list = links.filter(l => { try { return !SKIP_LINK_HOSTS.test(new URL(l).hostname); } catch { return false; } }).slice(0, limit);
   let i = 0;
   async function worker() {
     while (i < list.length) {
@@ -171,7 +181,8 @@ export async function auditSite(rawUrl, options = {}) {
   r.cms = wp ? `WordPress${wpVer ? ' ' + wpVer : ''}` : (/wix\.com|wixstatic/.test(lower) ? 'Wix' : /squarespace/.test(lower) ? 'Squarespace' : /cdn\.shopify|shopify\.com/.test(lower) ? 'Shopify' : /joomla/.test(generator.toLowerCase()) ? 'Joomla' : generator || 'Unknown');
   r.wpVersion = wpVer;
   r.phpVersion = (r.poweredBy.match(/PHP\/([\d.]+)/i) || [])[1] || null;
-  r.cmp = CMP_PATTERNS.find(p => lower.includes(p)) || null;
+  r.cmp = CMP_PATTERNS.find(p => lower.includes(p)) || (/gtag\(\s*['"]consent['"]\s*,\s*['"]default['"]/.test(lower) ? 'Google Consent Mode' : null);
+  r.cmpUncertain = !r.cmp && lower.includes('googletagmanager.com/gtm.js'); // a CMP may be injected via GTM
   r.trackers = TRACKER_PATTERNS.filter(([p]) => lower.includes(p)).map(([, n]) => n);
   const year = new Date().getFullYear();
   const years = [...html.matchAll(/(?:©|&copy;|copyright)\s*(?:\d{4}\s*[-–]\s*)?(\d{4})/gi)].map(m => +m[1]).filter(y => y > 1995 && y <= year);
@@ -212,6 +223,8 @@ function scoreIt(r) {
   else if (r.ssl.days < 14) add(2, 10, `SSL certificate expires in ${r.ssl.days} days`, `Your SSL certificate expires in ${r.ssl.days} days. After that, browsers will block visitors with a security warning.`);
   if (r.httpRedirect?.redirects === false) add(2, 8, 'HTTP does not redirect to HTTPS', `Typing ${r.host} without https opens an insecure version of the site.`);
   if (m && !m.error) {
+    if (m.lcp >= 8) add(3, 20, `Mobile main content appears after ${m.lcp}s`, `I opened ${r.host} on a phone and the main content took ${m.lcp} seconds to appear. Most people leave after 3.`);
+    else if (m.lcp >= 4) add(2, 10, `Slow mobile LCP: ${m.lcp}s`, `On mobile, ${r.host} takes ${m.lcp}s to show its main content. Google counts anything over 4s as poor.`);
     if (m.performance < 30) add(3, 25, `Mobile speed score ${m.performance}/100 (LCP ${m.lcp}s)`, `On a phone, ${r.host} takes about ${m.lcp}s to show its main content. Most visitors leave after 3 seconds.`);
     else if (m.performance < 50) add(2, 15, `Mobile speed score ${m.performance}/100 (LCP ${m.lcp}s)`, `On mobile, ${r.host} takes ${m.lcp}s to load. That's slow enough to lose customers and Google ranking.`);
     else if (m.performance < 75) add(1, 6, `Mobile speed score ${m.performance}/100`, null);
@@ -228,7 +241,7 @@ function scoreIt(r) {
   if (!r.favicon) add(1, 2, 'No favicon', null);
   if (r.imgTotal > 3 && r.imgNoAlt / r.imgTotal > 0.5) add(1, 3, `${r.imgNoAlt}/${r.imgTotal} images missing alt text`, null);
   if (r.links?.broken?.length) add(2, Math.min(12, r.links.broken.length * 3), `${r.links.broken.length} broken link(s) on homepage`, `There are ${r.links.broken.length} broken link(s) on your homepage. Visitors click and get an error page.`);
-  if (r.trackers?.length && !r.cmp) add(2, 8, `Tracking (${r.trackers.join(', ')}) with no cookie banner`, `Your site loads ${r.trackers[0]} without a cookie consent banner, which is a GDPR problem in the EU.`);
+  if (r.trackers?.length && !r.cmp) add(r.cmpUncertain ? 1 : 2, r.cmpUncertain ? 3 : 8, `Tracking (${r.trackers.join(', ')}) with no cookie banner${r.cmpUncertain ? ' (verify manually: may load via GTM)' : ''}`, r.cmpUncertain ? null : `Your site loads ${r.trackers[0]} without a cookie consent banner, which is a GDPR problem in the EU.`);
   if (r.wpVersion && parseFloat(r.wpVersion) < 6.4) add(2, 8, `Outdated WordPress ${r.wpVersion}`, `Your site runs an old WordPress version (${r.wpVersion}). Outdated WordPress is the #1 way sites get hacked.`);
   if (r.phpVersion && parseFloat(r.phpVersion) < 8.1) add(2, 6, `Outdated PHP ${r.phpVersion} exposed`, `Your server runs PHP ${r.phpVersion}, which no longer gets security updates.`);
   if (r.copyrightYear && r.copyrightYear < new Date().getFullYear() - 2) add(1, 3, `Footer says © ${r.copyrightYear}`, `The footer still says © ${r.copyrightYear}, which makes the business look inactive.`);
